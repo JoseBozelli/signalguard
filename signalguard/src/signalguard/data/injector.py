@@ -36,6 +36,20 @@ RULE_TOOL_MAP = {
     "R5": "calculate_interval",
 }
 
+# Gold retrieval labels: rule_id -> chunk_id(s), where chunk_id follows the
+# locked chunking convention "<doc_filename>::<section-heading-slug>"
+# (one chunk per markdown ## section). This mapping is answer-key
+# construction data -- it is never read by retrieval/reasoning code, only
+# by the injector (to populate AnswerKeyEntry.expected_doc_chunk_ids) and
+# later by the evaluation harness.
+RULE_CHUNK_MAP = {
+    "R1": ["event-lifecycle-rules.md::session-booking-and-completion"],
+    "R2": ["event-lifecycle-rules.md::task-completion-requirements"],
+    "R3": ["event-lifecycle-rules.md::follow-up-completion-requirements"],
+    "R4": ["event-lifecycle-rules.md::follow-up-completion-requirements"],
+    "R5": ["sla-and-timing-policies.md::follow-up-response-window-after-a-missed-session"],
+}
+
 Record = Dict[str, object]
 
 
@@ -148,6 +162,7 @@ def _inject_missing_prerequisite(
         affected_event_ids=[str(completed["event_id"])],
         affected_ref_id=ref_id,
         expected_tool=RULE_TOOL_MAP["R1"],
+        expected_doc_chunk_ids=RULE_CHUNK_MAP["R1"],
         description=f"session.completed (ref_id={ref_id}) has no preceding session.booked; the booked record was removed.",
     )
 
@@ -179,6 +194,7 @@ def _inject_bad_ordering(
         affected_event_ids=[str(required["event_id"]), str(completed["event_id"])],
         affected_ref_id=ref_id,
         expected_tool=RULE_TOOL_MAP["R2"],
+        expected_doc_chunk_ids=RULE_CHUNK_MAP["R2"],
         description=f"task.completed timestamp swapped to precede task.required for ref_id={ref_id}.",
     )
 
@@ -209,6 +225,7 @@ def _inject_timing_window_violation(
         affected_event_ids=[str(record["event_id"])],
         affected_ref_id=str(record["ref_id"]),
         expected_tool=RULE_TOOL_MAP["R5"],
+        expected_doc_chunk_ids=RULE_CHUNK_MAP["R5"],
         description=(
             f"followup.required (ref_id={record['ref_id']}) moved from {original_ts} to "
             f"{record['timestamp']}, 10 days after its triggering no_show (exceeds 7-day SLA)."

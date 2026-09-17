@@ -96,6 +96,17 @@ class TestInjector(unittest.TestCase):
             if entry.tier == "tier1":
                 self.assertIsNone(entry.rule_id)
                 self.assertIsNone(entry.expected_tool)
+                self.assertIsNone(entry.expected_doc_chunk_ids)
+
+    def test_tier2_entries_have_gold_doc_chunk_ids(self):
+        expected_chunks = {
+            "R1": ["event-lifecycle-rules.md::session-booking-and-completion"],
+            "R2": ["event-lifecycle-rules.md::task-completion-requirements"],
+            "R5": ["sla-and-timing-policies.md::follow-up-response-window-after-a-missed-session"],
+        }
+        for entry in self.answer_key:
+            if entry.tier == "tier2":
+                self.assertEqual(entry.expected_doc_chunk_ids, expected_chunks[entry.rule_id])
 
     def test_deterministic_with_fixed_seed(self):
         # event_id is uuid4-random and NOT reproducible across calls even

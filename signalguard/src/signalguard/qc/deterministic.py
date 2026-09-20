@@ -5,8 +5,8 @@ This module intentionally knows NOTHING about the documented business
 rules. It only performs record-level structural checks: things
 Python can establish with zero interpretation. This is what makes it a
 fair baseline to compare System B (the documentation-grounded AI
-pipeline) against -- Baseline A represents "what you get with schema
-validation alone, no reading of the docs."
+pipeline) against -- Baseline A represents "what schema
+validation alone catches, no reading of the docs."
 
 The rule-checking logic is deliberately NOT here. It is built as bounded tools 
 the AI pipeline calls only after retrieving and extracting the relevant rule from the doc corpus.

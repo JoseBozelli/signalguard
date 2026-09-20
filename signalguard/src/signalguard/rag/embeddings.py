@@ -17,6 +17,7 @@ swapping providers never silently changes calling behavior.
 from __future__ import annotations
 
 import hashlib
+import os
 import struct
 from typing import List, Protocol
 
@@ -81,3 +82,26 @@ class FakeEmbedder:
 
     def embed_query(self, text: str) -> List[float]:
         return self._hash_vector(text)
+
+# Registry of available providers. Adding a new one is: implement Embedder, add one line here -- mirrors the same
+# patterns as llm/reasoner.py
+_PROVIDERS = {"voyage": VoyageEmbedder}
+
+def get_embedder(provider: Optional[str] = None, model: Optional[str] = None) -> Embedder:
+    """
+    Config-driven provider selection, same pattern as get_reasoner(). Reads SIGNALGUARD_EMBEDDING_PROVIDER /
+    SIGNALGUARD_EMBEDDING_MODEL from the environment when not passed explicitly.
+    """
+    provider = provider or os.environ.get("SIGNALGUARD_EMBEDDING_PROVIDER", "voyage")
+    if provider not in _PROVIDERS:
+        raise ValueError(
+            f"Unknown embedding provider '{provider}'. Available: {list(_PROVIDERS)}. "
+            "To add another provider, implement the Embedder protocl and register it in _PROVIDERS."
+        )
+
+    kwargs = {}
+    env_model = model or os.environ.get("SIGNALGUARD_EMBEDDING_MODEL")
+    if env_model:
+        kwargs["model"] = env_model
+
+    return _PROVIDERS[provider](**kwargs)

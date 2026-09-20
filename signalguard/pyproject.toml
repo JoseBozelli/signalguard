@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic>=1.7.0",
     "chromadb>=1.5.9",
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",

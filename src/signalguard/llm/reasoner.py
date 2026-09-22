@@ -37,6 +37,24 @@ class Reasoner(Protocol):
         """
         ...
 
+    def call_with_tools(
+            self,
+            *,
+            system: str,
+            user_message: str,
+            tools: list,
+            tool_choice: dict
+    ) -> dict:
+        """
+        Offer the model several tools (each a dict with name, description, input_schema) and let it select one,
+        honoring tool_choice (e.g., {"type": "any"} to force some tool call, {"type": "tool, "name": X} to force
+        a specific one). Returns {"tool_name": str, "tool_input": dict} for whichever tool was actually called.
+
+        This is the genuine multi-tool-selection primitive; generate_structured is the special case of always 
+        forcing exactly one known tool.
+        """
+        ...
+
 class ClaudeReasoner:
     """This project's chosen provider. Uses Claude's tool-use API with a forced tool_choice to guarantee schema-shaped
     output."""
@@ -72,6 +90,25 @@ class ClaudeReasoner:
         tool_use_block = next(b for b in response.content if b.type == "tool_use")
         return tool_use_block.input
 
+    def call_with_tools(
+            self,
+            *,
+            system: str,
+            user_message: str,
+            tools: list,
+            tool_choice: dict,
+    ) -> dict:
+        response = self._client.messages.create(
+            model = self._model,
+            max_tokens=1024,
+            system=system,
+            messages=[{"role": "user", "content": user_message}],
+            tools=tools,
+            tool_choice=tool_choice
+        )
+        tool_use_block = next(b for b in response.content if b.type == "tool_use")
+        return {"tool_name": tool_use_block.name, "tool_input": tool_use_block.input}
+
 class FakeReasoner:
     """
     Deterministic, network-free reasoner for tests. Always returns a fixed, caller-supplied response regardless
@@ -79,8 +116,9 @@ class FakeReasoner:
     correctly parse the result) -- never extraction quality.
     """
 
-    def __init__(self, canned_response: dict):
+    def __init__(self, canned_response: dict, canned_tool_call: Optional[dict] = None):
         self._canned_response = canned_response
+        self._canned_tool_call = canned_tool_call
 
     def generate_structured(
             self,
@@ -92,6 +130,18 @@ class FakeReasoner:
             tool_description: str,
     ) -> dict:
         return self._canned_response
+
+    def call_with_tools(
+            self,
+            *,
+            system: str,
+            user_message: str,
+            tools: list,
+            tool_choice: dict
+    ) -> dict:
+        if self._canned_tool_call is None:
+            raise ValueError("FakeReasoner was not given a canned_tool_call to return.")
+        return self._canned_tool_call
 
 # Registry of available providers. Adding a new one is: implement Reasoner, add one line here.
 _PROVIDERS = {"anthropic": ClaudeReasoner}

@@ -30,7 +30,7 @@ Corrupted event batch  +  hidden answer key (never seen by the pipeline)
              Finding (System B)                           [IMPLEMENTED]
                     |
                     v
-             Evaluation vs. hidden answer key              [PARTIAL -- initial single-run measurement only]
+             Evaluation vs. hidden answer key              [IMPLEMENTED -- repeated-run harness, see Current Results]
 ```
 
 Every stage in the diagram above is built and has run end-to-end against the real corrupted benchmark. What remains is formal, repeated evaluation (Day 5) rather than any missing pipeline stage.
@@ -47,11 +47,22 @@ Every stage in the diagram above is built and has run end-to-end against the rea
 | System | Tier 1 Recall | Tier 2 Recall | False Positives |
 |---|---|---|---|
 | Deterministic QC (Baseline A) | 100% (15/15) | 0% (0/15) -- by design, it has no rule knowledge | 0 |
-| AI Pipeline (System B) | Not applicable -- System B only investigates Tier-2-relevant event types | 100% (15/15) in an initial single run | 0 (0/15 clean lifecycles checked) |
+| AI Pipeline (System B) | Not applicable -- System B only investigates Tier-2-relevant event types | 100% (15/15), consistent across 3 repeated runs | 1 per run, consistently (94% precision) |
 
-Baseline A's result is a deliberate contrast, not a shortcoming: it's built to represent "what schema validation alone catches," so System B's Tier-2 number is what demonstrates the project's hypothesis -- and in this initial run, it does.
+Baseline A's result is a deliberate contrast, not a shortcoming: it's built to represent "what schema validation alone catches," so System B's Tier-2 number is what demonstrates the project's hypothesis -- and across 3 repeated live runs, it does, consistently.
 
-Important caveat on the System B number: it reflects **one run** against a non-deterministic LLM, covering the specific 15 defect instances and 15 clean controls in the locked benchmark. A single clean result is encouraging but not yet a reliability claim -- the formal Day-5 evaluation harness will repeat this across multiple runs and report variance, retrieval Recall@k, tool-selection accuracy, and latency/cost, rather than resting on this one pass.
+Additional measured results (mean across 3 runs, live Claude + Voyage API):
+- **Retrieval Recall@3:** 100%
+- **Tool-selection accuracy:** 67% (10/15) -- pinned at the exact same value every run (see Failure Analysis below)
+- **Average latency per investigation:** ~9.2 seconds
+- **Total cost for 3 full evaluation runs (90 investigations):** $1.62 (~$0.54/run), using Claude Sonnet 4.6 published pricing
+
+### Failure Analysis
+
+Two results were consistent rather than noisy across all 3 runs -- worth documenting as findings, not variance:
+
+- **A single false positive recurs on every run**, at exactly the same rate (1/16 findings). This points to one specific clean record the pipeline reliably misjudges, not random model unreliability. Not yet root-caused -- the current pipeline trace does not retain enough detail to identify which record without a dedicated investigation.
+- **Tool-selection accuracy holds at exactly 67% (10/15) every run**, while Tier-2 recall stays at 100%. This means detection succeeds even when the model's tool choice does not match the hidden answer key's expected tool for that rule. The likely explanation: an ordering rule (`task.required` before `task.completed`) can be solved either with `check_event_order` directly, or by reframing it as `calculate_interval` with a zero-day threshold -- both are mathematically valid, but only one matches the internally-labeled "correct" tool. This is a hypothesis, not a confirmed diagnosis; the current trace captures which tool was selected, not the arguments it was called with, so this has not been verified end to end.
 
 ## Architecture
 
@@ -83,8 +94,10 @@ signalguard/
 |   +-- extraction/             # structured rule extraction
 |   +-- tools/                  # bounded deterministic tool functions + LLM tool selection
 |   +-- pipeline/               # end-to-end orchestration (System B)
-+-- scripts/                    # manual smoke tests (live API, not pytest)
+|   +-- eval/                   # evaluation metrics (precision/recall/F1, Recall@k, tool-selection accuracy)
++-- scripts/                    # manual smoke tests + evaluation runner (live API, not pytest)
 +-- tests/
++-- eval_report.json            # output of the most recent formal evaluation run
 ```
 
 ## Running Locally
@@ -116,20 +129,26 @@ Live end-to-end pipeline smoke test (System B -- requires both API keys, ~30 pip
 uv run python scripts/smoke_test_pipeline.py
 ```
 
+Formal evaluation (3 repeated runs, ~90 pipeline runs, real billed calls -- approximately $0.54/run on Claude Sonnet 4.6 pricing at this benchmark's scale):
+```bash
+uv run python scripts/run_evaluation.py
+```
+Writes a full per-run report to `eval_report.json` at the repository root.
+
 ## Testing
 
 ```bash
 uv run pytest tests/ -v
 ```
-98 tests passing as of this writing. The suite never depends on a live API call -- both `Embedder` and `Reasoner` have deterministic fake implementations used throughout the test suite.
+116 tests passing as of this writing. The suite never depends on a live API call -- both `Embedder` and `Reasoner` have deterministic fake implementations used throughout the test suite.
 
 ## Project Status
 
-**Completed:** synthetic data generation, corruption benchmark with hidden answer key, deterministic QC baseline (measured), RAG corpus + chunking + retrieval, provider-agnostic embedding/reasoning interfaces, structured extraction with verified abstention behavior, bounded tool functions, and full end-to-end orchestration (System B) -- an initial single run shows 100% Tier-2 recall with zero false positives, against Baseline A's measured 0% Tier-2 recall.
+**Completed:** synthetic data generation, corruption benchmark with hidden answer key, deterministic QC baseline (measured), RAG corpus + chunking + retrieval, provider-agnostic embedding/reasoning interfaces, structured extraction with verified abstention behavior, bounded tool functions, full end-to-end orchestration (System B), and a repeated-run evaluation harness (3 runs, real cost/latency tracking) -- 100% Tier-2 recall, consistent across all 3 runs, against Baseline A's measured 0% Tier-2 recall. Two consistent (non-random) findings from that evaluation -- a recurring false positive and a tool-selection mismatch that doesn't affect detection accuracy -- are documented in the Failure Analysis above, not yet root-caused.
 
 **In progress:** none actively mid-build at this checkpoint.
 
-**Planned:** a formal evaluation harness (Recall@k, tool-selection accuracy, hallucination rate, latency/cost, repeated runs to establish reliability rather than a single-run result), MLflow + JSONL tracing, FastAPI, Streamlit demo, Docker, CI, architecture diagram.
+**Planned:** MLflow + JSONL tracing (would help root-cause the two failure-analysis findings above), FastAPI, Streamlit demo, Docker, CI, architecture diagram.
 
 ## Engineering Decisions
 
@@ -140,13 +159,13 @@ uv run pytest tests/ -v
 
 ## Roadmap
 
-Remaining work: a standalone evaluation harness with repeated runs for reliability (not a single-run result), observability (MLflow/tracing), an API + demo UI, and repository polish (Docker, architecture diagram).
+Remaining work: root-causing the two Failure Analysis findings (recurring false positive, tool-selection mismatch), observability (MLflow/tracing -- would materially help both), an API + demo UI, and repository polish (Docker, architecture diagram).
 
 ## Limitations
 
 - All data is synthetic; no real event stream or production data has been used.
 - The benchmark is intentionally small (30 defects, 5 rules) for a one-week scope -- results should be read as a controlled proof of method, not a large-scale accuracy claim.
-- The 100% System B Tier-2 recall figure reflects a single run against a non-deterministic LLM. It has not yet been repeated to establish variance or reliability -- that is the formal evaluation harness's job, still planned.
+- The 100% System B Tier-2 recall figure is a repeated-run result (3 runs, identical outcome each time) against a real hidden benchmark of 15 defects -- see Current Results and Failure Analysis for the two consistent (not yet root-caused) secondary findings.
 - Two of the five documented rules (R3, R4) currently have zero injected benchmark instances exercising them.
 - This is a portfolio project; no production deployment, real users, or commercial use exists.
 

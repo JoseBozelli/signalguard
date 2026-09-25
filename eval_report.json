@@ -1,0 +1,47 @@
+[
+  {
+    "run": 1,
+    "tier2_recall": 1.0,
+    "tier2_precision": 0.9375,
+    "tier2_f1": 0.967741935483871,
+    "true_positives": 15,
+    "false_positives": 1,
+    "false_negatives": 0,
+    "retrieval_recall_at_3": 1.0,
+    "tool_selection_accuracy": 0.6666666666666666,
+    "avg_latency_seconds": 9.18,
+    "total_input_tokens": 105231,
+    "total_output_tokens": 15241,
+    "estimated_cost_usd": 0.544308
+  },
+  {
+    "run": 2,
+    "tier2_recall": 1.0,
+    "tier2_precision": 0.9375,
+    "tier2_f1": 0.967741935483871,
+    "true_positives": 15,
+    "false_positives": 1,
+    "false_negatives": 0,
+    "retrieval_recall_at_3": 1.0,
+    "tool_selection_accuracy": 0.6666666666666666,
+    "avg_latency_seconds": 9.13,
+    "total_input_tokens": 105055,
+    "total_output_tokens": 14651,
+    "estimated_cost_usd": 0.53493
+  },
+  {
+    "run": 3,
+    "tier2_recall": 1.0,
+    "tier2_precision": 0.9375,
+    "tier2_f1": 0.967741935483871,
+    "true_positives": 15,
+    "false_positives": 1,
+    "false_negatives": 0,
+    "retrieval_recall_at_3": 1.0,
+    "tool_selection_accuracy": 0.6666666666666666,
+    "avg_latency_seconds": 9.16,
+    "total_input_tokens": 105105,
+    "total_output_tokens": 14924,
+    "estimated_cost_usd": 0.539175
+  }
+]

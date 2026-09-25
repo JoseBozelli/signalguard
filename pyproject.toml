@@ -10,8 +10,13 @@ requires-python = ">=3.11"
 dependencies = [
     "anthropic>=1.7.0",
     "chromadb>=1.5.9",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
+    "requests>=2.34.2",
+    "streamlit>=1.32",
+    "uvicorn>=0.53.0",
     "voyageai>=0.5.0",
 ]
 

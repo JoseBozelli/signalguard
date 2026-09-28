@@ -1,5 +1,7 @@
 # SignalGuard
 
+![Tests](https://github.com/JoseBozelli/signalguard/actions/workflows/tests.yml/badge.svg)
+
 SignalGuard is a benchmark-driven system for testing whether documentation-grounded AI can detect data-quality defects in event data that schema validation alone cannot catch.
 
 Structural problems in event data -- a null field, a duplicate ID, an invalid category -- are easy to catch with a schema check. Harder problems are contextual: they only look wrong to someone who already knows a business rule that isn't visible in the data itself (for example, a follow-up event that must occur within a documented SLA window). SignalGuard builds a controlled synthetic benchmark with known injected defects of both kinds, then measures whether a documentation-grounded AI pipeline can detect the harder, rule-dependent class of defect -- and whether it can honestly say "not documented" when it cannot.
@@ -33,7 +35,7 @@ Corrupted event batch  +  hidden answer key (never seen by the pipeline)
              Evaluation vs. hidden answer key              [IMPLEMENTED -- repeated-run harness, see Current Results]
 ```
 
-Every stage in the diagram above is built and has run end-to-end against the real corrupted benchmark. What remains is formal, repeated evaluation (Day 5) rather than any missing pipeline stage.
+Every stage in the diagram above is built, tested, and has run end-to-end against the real corrupted benchmark, including repeated-run evaluation -- see Current Results below.
 
 ## Benchmark Design
 
@@ -69,17 +71,45 @@ Both fixes are in the evaluation harness and the benchmark's cross-tier interact
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    A[Synthetic Event Generator] --> B[Corruption Injector]
+    B --> C[Corrupted Event Batch]
+    B -.-> H[("Hidden Answer Key<br/>(isolated)")]
+
+    C --> D["Deterministic QC<br/>(Baseline A)"]
+    D --> F1["Finding: Tier 1"]
+
+    G[("Doc Corpus")] --> E["Documentation Retrieval<br/>(RAG / Chroma)"]
+    C --> E
+    E --> X["Structured Rule Extraction<br/>(Claude, forced tool-use)"]
+    X -->|documented| T["Bounded Tool Selection<br/>(Claude)"]
+    X -->|insufficient evidence| N["Abstain: no Finding"]
+    T --> TE["Deterministic Tool Execution<br/>(Python)"]
+    TE --> F2["Finding: Tier 2<br/>(System B)"]
+
+    F1 --> API["FastAPI Service"]
+    F2 --> API
+    API --> UI["Streamlit Demo"]
+
+    F1 --> EV["Evaluation Harness"]
+    F2 --> EV
+    H -.-> EV
+    EV --> MET["Metrics: precision / recall / F1 /<br/>retrieval / tool-selection accuracy"]
+    EV --> MLF[("MLflow<br/>run tracking")]
+    EV --> JSL[("JSONL<br/>execution traces")]
+```
+
 - **Schemas (Pydantic):** `Event` (built on a domain-neutral correlation-ID base), `AnswerKeyEntry`, `Finding`, `DocumentedRule`/`ExtractionResult`.
 - **Deterministic layer:** synthetic data generator, defect injector, Tier-1-only QC baseline (no rule knowledge, by design).
 - **RAG layer:** markdown chunker (one chunk per section), a provider-agnostic `Embedder` interface (Voyage AI in production, a deterministic fake for tests), and a Chroma vector index.
 - **LLM layer:** a provider-agnostic `Reasoner` interface (Claude in production, a deterministic fake for tests) forcing schema-shaped output via tool-use, so structured extraction is never free-text parsing.
-- **Bounded tools:** three deterministic Python functions (`check_prerequisite`, `check_event_order`, `calculate_interval`) that perform the actual data checks -- the LLM selects which applies and supplies its rule-specific arguments, but never performs the calculation itself.
+- **Bounded tools:** three deterministic Python functions (`check_prerequisites`, `check_event_order`, `calculate_interval`) that perform the actual data checks -- the LLM selects which applies and supplies its rule-specific arguments, but never performs the calculation itself.
 - **Orchestration:** `investigate_record()` connects retrieval, extraction, and tool selection into one pipeline (System B), producing a `Finding` only when a documented rule was found AND a tool confirmed a violation.
-- **Evaluation:** pure, unit-tested metrics functions (precision/recall/F1, Recall@k, tool-selection accuracy) plus a repeated-run evaluation script that produces a durable JSON report.
+- **Evaluation:** pure, unit-tested metrics functions (precision/recall/F1, Recall@k, tool-selection accuracy) plus a repeated-run evaluation script that produces a durable JSON report and per-investigation JSONL traces.
 - **API:** FastAPI service exposing deterministic QC (no external dependency) and the AI-pipeline investigation endpoint (requires Voyage + Claude keys); the Chroma index is built once and cached, not rebuilt per request.
 - **Demo:** a Streamlit interface that calls the FastAPI service over HTTP, not by importing pipeline functions directly.
-- **Observability:** MLflow run tracking, JSONL execution traces.
-- **Not yet built:** Docker, CI.
+- **Not yet built:** observability (MLflow run tracking, JSONL execution traces), Docker, CI.
 
 Provider choice for both embeddings and reasoning is a config value (`SIGNALGUARD_EMBEDDING_PROVIDER`, `SIGNALGUARD_LLM_PROVIDER`), not a hardcoded import -- swapping providers means adding one class, not modifying calling code. Voyage AI and Anthropic Claude are the providers currently implemented; the interfaces (`Embedder`, `Reasoner`) do not assume either one specifically, and a different embedding model or LLM provider could be substituted by implementing the same interface.
 
@@ -91,6 +121,7 @@ Python 3.11 - Pydantic v2 - pytest - `uv` (dependency/environment management) - 
 
 ```
 signalguard/
++-- .github/workflows/          # CI: runs the test suite on push/PR
 +-- data/docs_corpus/           # RAG documentation corpus (4 files)
 +-- src/signalguard/
 |   +-- schemas/                # Event, AnswerKeyEntry, Finding, DocumentedRule
@@ -178,7 +209,7 @@ uv run pytest tests/ -v
 
 **In progress:** none actively mid-build at this checkpoint.
 
-**Planned:** Docker, CI, architecture diagram.
+**Planned:** none actively planned. Docker was deliberately not pursued -- see Limitations.
 
 ## Engineering Decisions
 
@@ -191,14 +222,15 @@ uv run pytest tests/ -v
 
 ## Roadmap
 
-Remaining work: repository polish (Docker, CI, architecture diagram) and the R3/R4 benchmark coverage gap.
+Complete for the current scope. The one item deliberately not pursued -- Docker -- is documented in Limitations rather than left as an unstated gap.
 
 ## Limitations
 
 - All data is synthetic; no real event stream or production data has been used.
-- The benchmark is intentionally small (30 defects, 5 rules) -- results should be read as a controlled proof of method, not a large-scale accuracy claim.
+- The benchmark is intentionally small (30 defects, 5 rules) for a one-week scope -- results should be read as a controlled proof of method, not a large-scale accuracy claim.
 - The 100% System B Tier-2 recall, precision, retrieval, and tool-selection figures are repeated-run results (3 independent runs, identical outcome each time) against a real hidden benchmark of 15 defects and 15 clean controls -- see Current Results and Failure Analysis for how two earlier anomalies were diagnosed and resolved.
 - Two of the five documented rules (R3, R4) currently have zero injected benchmark instances exercising them.
+- Docker was deliberately not pursued: this project's own original scope plan pre-approved it as the first item to cut under schedule pressure, and a proper containerized setup here would need `docker-compose` (two coordinated services, FastAPI and Streamlit) rather than a single `Dockerfile` -- meaningfully more scope than a one-container app, for a project that already demonstrates deployment through a working live API and UI. CI is in place instead (`.github/workflows/tests.yml`), which was the higher-value, lower-effort item.
 - This is a portfolio project; no production deployment, real users, or commercial use exists.
 
 ## License

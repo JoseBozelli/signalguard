@@ -44,18 +44,43 @@ NUM_RUNS = 3
 
 
 def build_evaluation_sample(records, answer_key):
-    """Returns (tier2_entries, records_by_id, clean_candidates)."""
+    """
+    Returns (tier2_entries, records_by_id, clean_candidates).
+
+    A ref_id is excluded from "clean" if ANY answer-key entry touches it --
+    not just Tier-2 entries' affected_ref_id. Tier-1 defects only populate
+    affected_event_ids, but mutating one record in a lifecycle (e.g.
+    corrupting a session.booked record's event_type) can create a genuine,
+    unintended secondary violation for that same ref_id, invisible to a
+    filter that only checks Tier-2's affected_ref_id field. Missing this
+    was the actual cause of a "false positive" that was, on inspection, a
+    correct detection of a real (if accidental) defect.
+
+    Also stratifies 5 clean candidates per investigable event type, rather
+    than taking the first 15 records overall -- session.completed alone
+    has far more than 15 eligible records, so an unstratified slice
+    silently produced 15 session.completed controls and zero of the other
+    two types.
+    """
     records_by_id = {r["event_id"]: r for r in records}
     tier2_entries = [e for e in answer_key if e.tier == "tier2"]
-    defect_ref_ids = {e.affected_ref_id for e in answer_key if e.affected_ref_id}
+
+    touched_ref_ids = set()
+    for entry in answer_key:
+        if entry.affected_ref_id:
+            touched_ref_ids.add(entry.affected_ref_id)
+        for event_id in entry.affected_event_ids:
+            record = records_by_id.get(event_id)
+            if record and record.get("ref_id"):
+                touched_ref_ids.add(record["ref_id"])
 
     clean_candidates = []
     for event_type in ["session.completed", "task.completed", "followup.required"]:
-        clean_candidates.extend(
+        matches = [
             r for r in records
-            if r["event_type"] == event_type and r["ref_id"] not in defect_ref_ids
-        )
-    clean_candidates = clean_candidates[:15]  # 5 per type, matching the smoke test sample
+            if r["event_type"] == event_type and r["ref_id"] not in touched_ref_ids
+        ]
+        clean_candidates.extend(matches[:5])
 
     return tier2_entries, records_by_id, clean_candidates
 

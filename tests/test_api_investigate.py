@@ -62,5 +62,16 @@ def test_investigate_pipeline_error_returns_502():
 
 
 def test_investigate_missing_fields_is_validation_error():
-    response = client.post("/qc/investigate", json={})
-    assert response.status_code == 422
+    # Overriding the dependency even though this test expects a 422:
+    # FastAPI resolves Depends() as part of the same pass as body
+    # validation, not strictly after it -- without the override, this
+    # test would try to build the real pipeline (hitting Voyage for a
+    # real API key) before ever reaching the "missing fields" check,
+    # which is exactly what broke this in CI (no API key configured
+    # there, correctly).
+    app.dependency_overrides[get_investigate_fn] = lambda: (lambda candidate, all_records: None)
+    try:
+        response = client.post("/qc/investigate", json={})
+        assert response.status_code == 422
+    finally:
+        app.dependency_overrides.clear()

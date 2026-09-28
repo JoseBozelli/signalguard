@@ -1,6 +1,7 @@
 [
   {
     "run": 1,
+    "run_id": "14c65a065579",
     "tier2_recall": 1.0,
     "tier2_precision": 0.9375,
     "tier2_f1": 0.967741935483871,
@@ -9,13 +10,14 @@
     "false_negatives": 0,
     "retrieval_recall_at_3": 1.0,
     "tool_selection_accuracy": 0.6666666666666666,
-    "avg_latency_seconds": 9.18,
-    "total_input_tokens": 105231,
-    "total_output_tokens": 15241,
-    "estimated_cost_usd": 0.544308
+    "avg_latency_seconds": 8.97,
+    "total_input_tokens": 105131,
+    "total_output_tokens": 14987,
+    "estimated_cost_usd": 0.540198
   },
   {
     "run": 2,
+    "run_id": "e834873e012c",
     "tier2_recall": 1.0,
     "tier2_precision": 0.9375,
     "tier2_f1": 0.967741935483871,
@@ -24,13 +26,14 @@
     "false_negatives": 0,
     "retrieval_recall_at_3": 1.0,
     "tool_selection_accuracy": 0.6666666666666666,
-    "avg_latency_seconds": 9.13,
-    "total_input_tokens": 105055,
-    "total_output_tokens": 14651,
-    "estimated_cost_usd": 0.53493
+    "avg_latency_seconds": 8.98,
+    "total_input_tokens": 104978,
+    "total_output_tokens": 14733,
+    "estimated_cost_usd": 0.535929
   },
   {
     "run": 3,
+    "run_id": "1dfea5ef6a3b",
     "tier2_recall": 1.0,
     "tier2_precision": 0.9375,
     "tier2_f1": 0.967741935483871,
@@ -39,9 +42,9 @@
     "false_negatives": 0,
     "retrieval_recall_at_3": 1.0,
     "tool_selection_accuracy": 0.6666666666666666,
-    "avg_latency_seconds": 9.16,
-    "total_input_tokens": 105105,
-    "total_output_tokens": 14924,
-    "estimated_cost_usd": 0.539175
+    "avg_latency_seconds": 9.02,
+    "total_input_tokens": 105259,
+    "total_output_tokens": 14989,
+    "estimated_cost_usd": 0.540612
   }
 ]

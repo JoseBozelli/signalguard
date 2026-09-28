@@ -23,6 +23,8 @@ import json
 import time
 from pathlib import Path
 
+import mlflow
+
 from signalguard.data.generator import generate_clean_dataset
 from signalguard.data.injector import inject_defects
 from signalguard.eval.metrics import (
@@ -31,11 +33,13 @@ from signalguard.eval.metrics import (
     compute_tool_selection_accuracy,
 )
 from signalguard.llm.reasoner import ClaudeReasoner
+from signalguard.observability.tracing import JSONLTracer, new_run_id
 from signalguard.pipeline.orchestrator import investigate_record_with_trace, pick_investigable_candidate
 from signalguard.rag.embeddings import get_embedder
 from signalguard.rag.index import build_index, retrieve
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "data" / "docs_corpus"
+TRACES_PATH = Path(__file__).resolve().parent.parent / "traces" / "evaluation_traces.jsonl"
 NUM_RUNS = 3
 
 
@@ -56,10 +60,21 @@ def build_evaluation_sample(records, answer_key):
     return tier2_entries, records_by_id, clean_candidates
 
 
-def run_one_pass(tier2_entries, records_by_id, clean_candidates, all_records, retrieve_fn, reasoner):
+def _finding_to_dict(finding):
+    if finding is None:
+        return None
+    return finding.model_dump() if hasattr(finding, "model_dump") else dict(finding)
+
+
+def run_one_pass(
+    tier2_entries, records_by_id, clean_candidates, all_records, retrieve_fn, reasoner, tracer, run_id
+):
     """
     Runs one full evaluation pass. Returns a dict with the Findings
     produced, retrieval hits, tool-selection pairs, and per-call latency.
+    Every investigation is also logged as one JSONL trace record,
+    regardless of outcome, so a null result is as reconstructable as a
+    violation.
     """
     findings = []
     retrieval_hits = []
@@ -70,7 +85,26 @@ def run_one_pass(tier2_entries, records_by_id, clean_candidates, all_records, re
         candidate = pick_investigable_candidate(entry.affected_event_ids, records_by_id)
         start = time.perf_counter()
         trace = investigate_record_with_trace(candidate, all_records, retrieve_fn, reasoner=reasoner)
-        latencies.append(time.perf_counter() - start)
+        latency = time.perf_counter() - start
+        latencies.append(latency)
+
+        tracer.log({
+            "run_id": run_id,
+            "candidate_kind": "seeded_defect",
+            "rule_id": entry.rule_id,
+            "expected_tool": entry.expected_tool,
+            "expected_doc_chunk_ids": entry.expected_doc_chunk_ids,
+            "event_type": trace.event_type,
+            "ref_id": candidate.get("ref_id"),
+            "question": trace.question,
+            "retrieved_chunk_ids": trace.retrieved_chunk_ids,
+            "extraction_status": trace.extraction_status,
+            "extracted_rule_id": trace.extracted_rule_id,
+            "selected_tool": trace.selected_tool,
+            "tool_violated": trace.tool_violated,
+            "finding": _finding_to_dict(trace.finding),
+            "latency_seconds": round(latency, 3),
+        })
 
         if entry.expected_doc_chunk_ids:
             retrieval_hits.append(bool(set(trace.retrieved_chunk_ids) & set(entry.expected_doc_chunk_ids)))
@@ -82,7 +116,27 @@ def run_one_pass(tier2_entries, records_by_id, clean_candidates, all_records, re
     for candidate in clean_candidates:
         start = time.perf_counter()
         trace = investigate_record_with_trace(candidate, all_records, retrieve_fn, reasoner=reasoner)
-        latencies.append(time.perf_counter() - start)
+        latency = time.perf_counter() - start
+        latencies.append(latency)
+
+        tracer.log({
+            "run_id": run_id,
+            "candidate_kind": "clean_control",
+            "rule_id": None,
+            "expected_tool": None,
+            "expected_doc_chunk_ids": None,
+            "event_type": trace.event_type,
+            "ref_id": candidate.get("ref_id"),
+            "question": trace.question,
+            "retrieved_chunk_ids": trace.retrieved_chunk_ids,
+            "extraction_status": trace.extraction_status,
+            "extracted_rule_id": trace.extracted_rule_id,
+            "selected_tool": trace.selected_tool,
+            "tool_violated": trace.tool_violated,
+            "finding": _finding_to_dict(trace.finding),
+            "latency_seconds": round(latency, 3),
+        })
+
         if trace.finding:
             findings.append(trace.finding)  # a false positive on clean data
 
@@ -103,36 +157,63 @@ def main():
     records, answer_key = inject_defects(events, seed=7, instances_per_defect_type=5)
     tier2_entries, records_by_id, clean_candidates = build_evaluation_sample(records, answer_key)
 
+    tracer = JSONLTracer(TRACES_PATH)
+
     print(f"Evaluation sample: {len(tier2_entries)} Tier-2 defects + {len(clean_candidates)} clean controls")
-    print(f"Repeating {NUM_RUNS} times for a reliability read (not a single-run result)\n")
+    print(f"Repeating {NUM_RUNS} times for a reliability read (not a single-run result)")
+    print(f"Traces will be appended to {TRACES_PATH}\n")
+
+    mlflow.set_experiment("signalguard_evaluation")
 
     run_reports = []
     for run_index in range(1, NUM_RUNS + 1):
         print(f"{'=' * 70}\nRUN {run_index}/{NUM_RUNS}\n{'=' * 70}")
+        run_id = new_run_id()
         reasoner = ClaudeReasoner()  # fresh instance per run: isolates token accounting per run
-        result = run_one_pass(tier2_entries, records_by_id, clean_candidates, records, retrieve_fn, reasoner)
 
-        detection = compute_detection_metrics(result["findings"], answer_key, tier="tier2")
-        retrieval_recall = compute_retrieval_recall_at_k(result["retrieval_hits"])
-        tool_accuracy = compute_tool_selection_accuracy(result["tool_selection_pairs"])
-        avg_latency = sum(result["latencies"]) / len(result["latencies"]) if result["latencies"] else 0.0
+        with mlflow.start_run(run_name=f"eval_run_{run_index}"):
+            mlflow.log_param("run_id", run_id)
+            mlflow.log_param("run_index", run_index)
+            mlflow.log_param("num_tier2_defects", len(tier2_entries))
+            mlflow.log_param("num_clean_controls", len(clean_candidates))
+            mlflow.log_param("model", "claude-sonnet-4-6")
 
-        report = {
-            "run": run_index,
-            "tier2_recall": detection.recall,
-            "tier2_precision": detection.precision,
-            "tier2_f1": detection.f1,
-            "true_positives": detection.true_positives,
-            "false_positives": detection.false_positives,
-            "false_negatives": detection.false_negatives,
-            "retrieval_recall_at_3": retrieval_recall,
-            "tool_selection_accuracy": tool_accuracy,
-            "avg_latency_seconds": round(avg_latency, 2),
-            "total_input_tokens": reasoner.total_input_tokens,
-            "total_output_tokens": reasoner.total_output_tokens,
-            "estimated_cost_usd": round(reasoner.estimated_cost_usd, 6),
-        }
-        run_reports.append(report)
+            result = run_one_pass(
+                tier2_entries, records_by_id, clean_candidates, records, retrieve_fn, reasoner, tracer, run_id
+            )
+
+            detection = compute_detection_metrics(result["findings"], answer_key, tier="tier2")
+            retrieval_recall = compute_retrieval_recall_at_k(result["retrieval_hits"])
+            tool_accuracy = compute_tool_selection_accuracy(result["tool_selection_pairs"])
+            avg_latency = sum(result["latencies"]) / len(result["latencies"]) if result["latencies"] else 0.0
+
+            report = {
+                "run": run_index,
+                "run_id": run_id,
+                "tier2_recall": detection.recall,
+                "tier2_precision": detection.precision,
+                "tier2_f1": detection.f1,
+                "true_positives": detection.true_positives,
+                "false_positives": detection.false_positives,
+                "false_negatives": detection.false_negatives,
+                "retrieval_recall_at_3": retrieval_recall,
+                "tool_selection_accuracy": tool_accuracy,
+                "avg_latency_seconds": round(avg_latency, 2),
+                "total_input_tokens": reasoner.total_input_tokens,
+                "total_output_tokens": reasoner.total_output_tokens,
+                "estimated_cost_usd": round(reasoner.estimated_cost_usd, 6),
+            }
+            run_reports.append(report)
+
+            mlflow.log_metric("tier2_recall", detection.recall)
+            mlflow.log_metric("tier2_precision", detection.precision)
+            mlflow.log_metric("tier2_f1", detection.f1)
+            mlflow.log_metric("retrieval_recall_at_3", retrieval_recall)
+            mlflow.log_metric("tool_selection_accuracy", tool_accuracy)
+            mlflow.log_metric("avg_latency_seconds", avg_latency)
+            mlflow.log_metric("total_input_tokens", reasoner.total_input_tokens)
+            mlflow.log_metric("total_output_tokens", reasoner.total_output_tokens)
+            mlflow.log_metric("estimated_cost_usd", reasoner.estimated_cost_usd)
 
         print(f"  Tier-2 recall: {detection.recall:.0%} ({detection.true_positives}/{detection.true_positives + detection.false_negatives})")
         print(f"  Tier-2 precision: {detection.precision:.0%}")
@@ -152,6 +233,8 @@ def main():
     print(f"Mean recall: {sum(recalls) / len(recalls):.0%}  |  Min: {min(recalls):.0%}  |  Max: {max(recalls):.0%}")
     print(f"Total estimated cost for {NUM_RUNS} runs: ${total_cost:.6f}")
     print("\nBaseline A (Day 2, measured, deterministic): Tier-2 recall 0/15, false positives 0")
+    print(f"\nView run-level metrics with: uv run mlflow ui")
+    print(f"Inspect per-investigation traces at: {TRACES_PATH}")
 
     output_path = Path(__file__).resolve().parent.parent / "eval_report.json"
     with open(output_path, "w") as f:

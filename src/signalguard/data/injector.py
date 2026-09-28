@@ -29,9 +29,9 @@ from signalguard.schemas.answer_key import AnswerKeyEntry
 from signalguard.schemas.event import Event, EventType
 
 RULE_TOOL_MAP = {
-    "R1": "check_prerequisite",
+    "R1": "check_prerequisites",
     "R2": "check_event_order",
-    "R3": "check_prerequisite",
+    "R3": "check_prerequisites",
     "R4": "check_event_order",
     "R5": "calculate_interval",
 }
@@ -41,7 +41,7 @@ RULE_TOOL_MAP = {
 # (one chunk per markdown ## section). This mapping is answer-key
 # construction data -- it is never read by retrieval/reasoning code, only
 # by the injector (to populate AnswerKeyEntry.expected_doc_chunk_ids) and
-# later by the evaluation harness.
+# later by the Day-5 evaluation harness.
 RULE_CHUNK_MAP = {
     "R1": ["event-lifecycle-rules.md::session-booking-and-completion"],
     "R2": ["event-lifecycle-rules.md::task-completion-requirements"],

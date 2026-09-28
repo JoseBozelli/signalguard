@@ -66,7 +66,7 @@ class TestInjector(unittest.TestCase):
             types = {r["event_type"] for r in same_ref}
             self.assertNotIn("session.booked", types)
             self.assertIn("session.completed", types)
-            self.assertEqual(entry.expected_tool, "check_prerequisite")
+            self.assertEqual(entry.expected_tool, "check_prerequisites")
 
     def test_bad_ordering_r2_actually_out_of_order(self):
         entries = [e for e in self.answer_key if e.rule_id == "R2"]

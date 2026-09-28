@@ -44,25 +44,28 @@ Every stage in the diagram above is built and has run end-to-end against the rea
 
 ## Current Results
 
-| System | Tier 1 Recall | Tier 2 Recall | False Positives |
+| System | Tier 1 Recall | Tier 2 Recall | Tier 2 Precision |
 |---|---|---|---|
-| Deterministic QC (Baseline A) | 100% (15/15) | 0% (0/15) -- by design, it has no rule knowledge | 0 |
-| AI Pipeline (System B) | Not applicable -- System B only investigates Tier-2-relevant event types | 100% (15/15), consistent across 3 repeated runs | 1 per run, consistently (94% precision) |
+| Deterministic QC (Baseline A) | 100% (15/15) | 0% (0/15) -- by design, it has no rule knowledge | not applicable |
+| AI Pipeline (System B) | not applicable -- System B only investigates Tier-2-relevant event types | 100% (15/15), consistent across 3 repeated runs | 100%, consistent across 3 repeated runs |
 
-Baseline A's result is a deliberate contrast, not a shortcoming: it's built to represent "what schema validation alone catches," so System B's Tier-2 number is what demonstrates the project's hypothesis -- and across 3 repeated live runs, it does, consistently.
+Baseline A's result is a deliberate contrast, not a shortcoming: it's built to represent "what schema validation alone catches," so System B's Tier-2 numbers are what demonstrate the project's hypothesis -- and across 3 repeated live runs, they do, consistently and without qualification.
 
 Additional measured results (mean across 3 runs, live Claude + Voyage API):
 - **Retrieval Recall@3:** 100%
-- **Tool-selection accuracy:** 67% (10/15) -- pinned at the exact same value every run (see Failure Analysis below)
-- **Average latency per investigation:** ~9.2 seconds
-- **Total cost for 3 full evaluation runs (90 investigations):** $1.62 (~$0.54/run), using Claude Sonnet 4.6 published pricing
+- **Tool-selection accuracy:** 100%
+- **Average latency per investigation:** ~8.3 seconds
+- **Total cost for 3 full evaluation runs (90 investigations):** $1.57, using Claude Sonnet 4.6 published pricing
 
 ### Failure Analysis
 
-Two results were consistent rather than noisy across all 3 runs -- worth documenting as findings, not variance:
+An earlier evaluation pass showed two consistent (non-random) anomalies: tool-selection accuracy pinned at exactly 67% every run, and a recurring false positive on one specific clean-control record. Both were root-caused using a dedicated trace-analysis tool (`scripts/analyze_traces.py`) built specifically to break the JSONL execution log down by rule and by outcome -- neither anomaly required touching the detection pipeline itself.
 
-- **A single false positive recurs on every run**, at exactly the same rate (1/16 findings). This points to one specific clean record the pipeline reliably misjudges, not random model unreliability. Not yet root-caused -- the current pipeline trace does not retain enough detail to identify which record without a dedicated investigation.
-- **Tool-selection accuracy holds at exactly 67% (10/15) every run**, while Tier-2 recall stays at 100%. This means detection succeeds even when the model's tool choice does not match the hidden answer key's expected tool for that rule. The likely explanation: an ordering rule (`task.required` before `task.completed`) can be solved either with `check_event_order` directly, or by reframing it as `calculate_interval` with a zero-day threshold -- both are mathematically valid, but only one matches the internally-labeled "correct" tool. This is a hypothesis, not a confirmed diagnosis; the current trace captures which tool was selected, not the arguments it was called with, so this has not been verified end to end.
+- **Tool-selection mismatch:** the answer key's `RULE_TOOL_MAP` used the singular `check_prerequisite`, written before the real tool existed to name it against; the actual implemented tool has always been `check_prerequisites` (plural). Every R1 case was scored as a mismatch by a one-letter spelling difference between the answer key and the tool registry, not by the model choosing a different (if defensible) tool. An earlier hypothesis in this README -- that the model might be solving the ordering rule via `calculate_interval` instead of `check_event_order` -- was wrong and has been withdrawn; the trace data showed no such substitution ever occurred.
+- **Recurring false positive:** traced to one record, `sess_00020`, whose `session.booked` event had been independently mutated by a Tier-1 `invalid_event_type` defect (changed to `session.rescheduled`). This made the record genuinely invisible to the Tier-2 prerequisite check, which was therefore reporting a real (if unintended) defect rather than a spurious one. The evaluation harness's own clean-control filter had a gap: it only excluded ref_ids referenced by a Tier-2 answer-key entry's `affected_ref_id` field, which Tier-1 entries never populate, so a ref_id touched only by a Tier-1 mutation could still be selected as a "clean" control. Fixing the filter to check every answer-key entry's `affected_event_ids` (not just Tier-2's `affected_ref_id`) removed the false positive -- because it correctly was not one.
+- **A second bug found during the same fix:** the clean-control sample was intended to be stratified 5 records per investigable event type, but an unstratified list slice silently produced all 15 from `session.completed` alone; `task.completed` and `followup.required` were never actually exercised as clean controls until this was corrected.
+
+Both fixes are in the evaluation harness and the benchmark's cross-tier interaction, not in the detection pipeline itself -- the 100% Tier-2 recall figure was already correct before either fix; only precision and tool-selection accuracy were affected.
 
 ## Architecture
 
@@ -75,7 +78,8 @@ Two results were consistent rather than noisy across all 3 runs -- worth documen
 - **Evaluation:** pure, unit-tested metrics functions (precision/recall/F1, Recall@k, tool-selection accuracy) plus a repeated-run evaluation script that produces a durable JSON report.
 - **API:** FastAPI service exposing deterministic QC (no external dependency) and the AI-pipeline investigation endpoint (requires Voyage + Claude keys); the Chroma index is built once and cached, not rebuilt per request.
 - **Demo:** a Streamlit interface that calls the FastAPI service over HTTP, not by importing pipeline functions directly.
-- **Not yet built:** observability (MLflow run tracking, JSONL execution traces), Docker, CI.
+- **Observability:** MLflow run tracking, JSONL execution traces.
+- **Not yet built:** Docker, CI.
 
 Provider choice for both embeddings and reasoning is a config value (`SIGNALGUARD_EMBEDDING_PROVIDER`, `SIGNALGUARD_LLM_PROVIDER`), not a hardcoded import -- swapping providers means adding one class, not modifying calling code. Voyage AI and Anthropic Claude are the providers currently implemented; the interfaces (`Embedder`, `Reasoner`) do not assume either one specifically, and a different embedding model or LLM provider could be substituted by implementing the same interface.
 
@@ -101,7 +105,7 @@ signalguard/
 |   +-- api/                    # FastAPI service (Baseline QC + AI-pipeline investigate endpoints)
 +-- app/                        # Streamlit demo (HTTP client of the API service)
 +-- .streamlit/                 # theme configuration
-+-- scripts/                    # manual smoke tests + evaluation runner (live API, not pytest)
++-- scripts/                    # smoke tests, evaluation runner, trace analysis (live API where noted, not pytest)
 +-- tests/
 +-- eval_report.json            # output of the most recent formal evaluation run
 ```
@@ -139,7 +143,13 @@ Formal evaluation (3 repeated runs, ~90 pipeline runs, real billed calls -- appr
 ```bash
 uv run python scripts/run_evaluation.py
 ```
-Writes a full per-run report to `eval_report.json` at the repository root.
+Writes a full per-run report to `eval_report.json` and per-investigation traces to `traces/evaluation_traces.jsonl` at the repository root.
+
+Trace analysis (local file only, no API calls, free to re-run):
+```bash
+uv run python scripts/analyze_traces.py
+```
+Reports tool-selection agreement per rule and false positives on clean controls -- this is the tool that diagnosed both anomalies described in Failure Analysis above.
 
 API service (Baseline QC works with no external API; the investigate endpoint requires both keys):
 ```bash
@@ -160,15 +170,15 @@ The Baseline QC tab works immediately with no external API. The Investigate tab 
 ```bash
 uv run pytest tests/ -v
 ```
-126 tests passing as of this writing. The suite never depends on a live API call -- both `Embedder` and `Reasoner` have deterministic fake implementations used throughout the test suite, including for the API layer (FastAPI's dependency injection is overridden with fakes in tests).
+146 tests passing as of this writing. The suite never depends on a live API call -- both `Embedder` and `Reasoner` have deterministic fake implementations used throughout the test suite, including for the API layer (FastAPI's dependency injection is overridden with fakes in tests).
 
 ## Project Status
 
-**Completed:** synthetic data generation, corruption benchmark with hidden answer key, deterministic QC baseline (measured), RAG corpus + chunking + retrieval, provider-agnostic embedding/reasoning interfaces, structured extraction with verified abstention behavior, bounded tool functions, full end-to-end orchestration (System B), a repeated-run evaluation harness (3 runs, real cost/latency tracking), a FastAPI service (deterministic QC + AI-pipeline investigation endpoints), and a Streamlit demo interface. Measured result: 100% Tier-2 recall, consistent across all 3 evaluation runs, against Baseline A's measured 0% Tier-2 recall. Two consistent (non-random) findings from that evaluation -- a recurring false positive and a tool-selection mismatch that doesn't affect detection accuracy -- are documented in the Failure Analysis above, not yet root-caused.
+**Completed:** synthetic data generation, corruption benchmark with hidden answer key, deterministic QC baseline (measured), RAG corpus + chunking + retrieval, provider-agnostic embedding/reasoning interfaces, structured extraction with verified abstention behavior, bounded tool functions, full end-to-end orchestration (System B), observability (JSONL execution traces + MLflow run tracking), a repeated-run evaluation harness (3 runs, real cost/latency tracking), a FastAPI service (deterministic QC + AI-pipeline investigation endpoints), and a Streamlit demo interface. Measured result: 100% Tier-2 recall, precision, retrieval, and tool-selection accuracy, consistent across all 3 evaluation runs, against Baseline A's measured 0% Tier-2 recall. Two earlier anomalies in that evaluation were root-caused and fixed using a dedicated trace-analysis tool -- see Failure Analysis above.
 
 **In progress:** none actively mid-build at this checkpoint.
 
-**Planned:** MLflow + JSONL tracing (would help root-cause the two failure-analysis findings above), Docker, CI, architecture diagram.
+**Planned:** Docker, CI, architecture diagram.
 
 ## Engineering Decisions
 
@@ -177,16 +187,17 @@ uv run pytest tests/ -v
 - Embedding and reasoning providers sit behind interfaces with deterministic fakes, so the test suite has zero cost and zero network dependency.
 - The hidden answer key (including retrieval and tool-selection gold labels) was designed before any detection code was written, and is structurally isolated from the reasoning path.
 - The Streamlit demo calls the FastAPI service over HTTP rather than importing pipeline functions directly, so the demo genuinely exercises the API layer rather than bypassing it.
+- Anomalous evaluation results (a pinned tool-selection rate, a recurring false positive) were root-caused with a dedicated trace-analysis tool rather than accepted as model unreliability or patched by re-running -- both turned out to be bugs in the evaluation harness itself, not the detection pipeline.
 
 ## Roadmap
 
-Remaining work: root-causing the two Failure Analysis findings (recurring false positive, tool-selection mismatch), observability (MLflow/tracing -- would materially help both), and repository polish (Docker, CI, architecture diagram).
+Remaining work: repository polish (Docker, CI, architecture diagram) and the R3/R4 benchmark coverage gap.
 
 ## Limitations
 
 - All data is synthetic; no real event stream or production data has been used.
-- The benchmark is intentionally small (30 defects, 5 rules) for a one-week scope -- results should be read as a controlled proof of method, not a large-scale accuracy claim.
-- The 100% System B Tier-2 recall figure is a repeated-run result (3 runs, identical outcome each time) against a real hidden benchmark of 15 defects -- see Current Results and Failure Analysis for the two consistent (not yet root-caused) secondary findings.
+- The benchmark is intentionally small (30 defects, 5 rules) -- results should be read as a controlled proof of method, not a large-scale accuracy claim.
+- The 100% System B Tier-2 recall, precision, retrieval, and tool-selection figures are repeated-run results (3 independent runs, identical outcome each time) against a real hidden benchmark of 15 defects and 15 clean controls -- see Current Results and Failure Analysis for how two earlier anomalies were diagnosed and resolved.
 - Two of the five documented rules (R3, R4) currently have zero injected benchmark instances exercising them.
 - This is a portfolio project; no production deployment, real users, or commercial use exists.
 
